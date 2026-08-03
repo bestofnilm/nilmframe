@@ -53,6 +53,5 @@ High frequency
    :template: autosummary/class.rst
    :nosignatures:
 
-   CycleCNN
-   faustine
-   schirmer
+   Faustine
+   Schirmer

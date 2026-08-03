@@ -19,7 +19,7 @@ and nothing else:
 One reads a different rank, because the high-frequency path is aligned into cycles
 and flattening that would throw the cycle axis away:
 
-    >>> cycle = nf.nn.models.build("cyclecnn", n_appliances=3, cycles=8,
+    >>> cycle = nf.nn.models.build("faustine", n_appliances=3, cycles=8,
     ...                            cycle_size=64, out_features=16)
     >>> cycle.input_rank, tuple(cycle(torch.rand(1, 2, 8, 64)).shape)
     (4, (1, 3, 1))
@@ -41,7 +41,7 @@ from __future__ import annotations
 
 from nilmframe.nn.models.base import NILMModel, Standardiser
 from nilmframe.nn.models.conv import DAE, SGN, Seq2Point, Seq2Seq, TransferNILM
-from nilmframe.nn.models.cycle import CycleCNN, faustine, schirmer
+from nilmframe.nn.models.cycle import Faustine, Schirmer
 from nilmframe.nn.models.deep import (
     BERT4NILM,
     TPNILM,
@@ -58,9 +58,10 @@ __all__ = [
     "SGN",
     "TPNILM",
     "AttentionNILM",
-    "CycleCNN",
     "ELECTRIcity",
+    "Faustine",
     "NILMModel",
+    "Schirmer",
     "Seq2Point",
     "Seq2Seq",
     "Standardiser",
@@ -68,8 +69,6 @@ __all__ = [
     "UNetNILM",
     "WaveNILM",
     "build",
-    "faustine",
-    "schirmer",
 ]
 
 #: Short name to class. The names are what a config file or a sweep writes, so
@@ -86,9 +85,8 @@ MODELS: dict[str, type[NILMModel]] = {
     "attention": AttentionNILM,
     "bert4nilm": BERT4NILM,
     "electricity": ELECTRIcity,
-    "cyclecnn": CycleCNN,
-    "faustine": faustine,
-    "schirmer": schirmer,
+    "faustine": Faustine,
+    "schirmer": Schirmer,
 }
 
 
@@ -119,9 +117,9 @@ def build(name: str, n_appliances: int, **kwargs) -> NILMModel:
         >>> nf.nn.models.build("seq2pont", 4)
         Traceback (most recent call last):
             ...
-        KeyError: "unknown model 'seq2pont'; available: attention, bert4nilm,
-        cyclecnn, dae, electricity, faustine, schirmer, seq2point, seq2seq, sgn,
-        tpnilm, transfer, unet, wavenilm"
+        KeyError: "unknown model 'seq2pont'; available: attention, bert4nilm, dae,
+        electricity, faustine, schirmer, seq2point, seq2seq, sgn, tpnilm,
+        transfer, unet, wavenilm"
     """
     try:
         cls = MODELS[name]

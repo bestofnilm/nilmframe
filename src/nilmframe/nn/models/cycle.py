@@ -1,70 +1,37 @@
-"""The high-frequency path: a model over aligned cycles.
+"""The two published architectures that read aligned mains cycles.
 
-Every other model in this package reads a low-rate power series -- one step per
-meter reading, watts. A waveform corpus does not arrive that way. It arrives as
-voltage and current at kilohertz, and once :func:`~nilmframe.nn.cycle_align` has
-put each mains cycle on a common grid it is a *two-dimensional* thing: cycles by
-samples-within-a-cycle. Flattening that to a series would throw away the axis that
-makes it worth having.
+Every other model in this package reads a low-rate power series. These two read
+the waveform: once :func:`~nilmframe.nn.cycle_align` has put each mains cycle on a
+common grid, a window is cycles by samples-within-a-cycle, and both papers treat
+that grid as an image.
 
-So this model takes the aligned tensor as it is. The contract still holds --
-watts per appliance out, the shape declared rather than implied -- but the input
-rank is four instead of three, and :attr:`~NILMModel.input_rank` says so.
+They differ in the encoder and in nothing else. Faustine's is four strided blocks
+widening 16 to 128; Schirmer's is three narrow same-padded blocks. Both are in
+:mod:`nilmframe.nn.encoders` as :func:`~nilmframe.nn.faustine_cnn` and
+:func:`~nilmframe.nn.schirmer_cnn`, so they can also be used on their own.
 
-It is a point model by construction. An aligned window is one observation of a
-load, so there is one power vector to predict, not one per step; ``L_out`` is 1
-and the extra axis is kept only so the output shape matches everything else.
-
-The encoder is whatever you hand it. :class:`~nilmframe.nn.ConvNet2d` treats the
-cycle grid as an image, :class:`~nilmframe.nn.CycleTransformer` treats each cycle
-as a token, and :func:`~nilmframe.nn.faustine_cnn` and
-:func:`~nilmframe.nn.schirmer_cnn` are the two published presets.
+The contract holds, with one declared exception: the input is rank 4 rather than
+rank 3, because the aligned window genuinely has a second axis and flattening it
+would throw away the reason for measuring at kilohertz. Both are point models --
+one aligned window is one observation of a load, so there is one power vector to
+predict.
 """
 
 from __future__ import annotations
 
 from torch import Tensor, nn
 
-from nilmframe.nn.encoders import ConvNet2d, faustine_cnn, schirmer_cnn
+from nilmframe.nn.encoders import faustine_cnn, schirmer_cnn
 from nilmframe.nn.models.base import NILMModel, Standardiser
 
-__all__ = ["CycleCNN", "faustine", "schirmer"]
+__all__ = ["Faustine", "Schirmer"]
 
 
-class CycleCNN(NILMModel):
-    """Per-appliance watts from a window of aligned mains cycles.
+class _CycleModel(NILMModel):
+    """Shared plumbing: an encoder over the cycle grid, projected onto appliances.
 
-    Args:
-        n_appliances: size of the label space, ``K``.
-        cycles: cycles per window.
-        cycle_size: samples per cycle, after alignment.
-        in_channels: channels the adapter produces -- 1 for ``"i"``, 2 for
-            ``"vi"``, 3 for ``"fryze"``.
-        encoder: a module mapping ``(B, C, cycles, cycle_size)`` to
-            ``(B, out_features)``. Defaults to a :class:`~nilmframe.nn.ConvNet2d`.
-        out_features: encoder width, when the default encoder is used.
-        standardiser: input/output scaling.
-
-    Example:
-        >>> model = nf.nn.models.CycleCNN(3, cycles=8, cycle_size=64, out_features=32)
-        >>> model.kind, model.input_rank
-        ('seq2point', 4)
-        >>> tuple(model(torch.rand(2, 2, 8, 64)).shape)
-        (2, 3, 1)
-
-    Note:
-        The adapter is separate on purpose. :class:`~nilmframe.nn.CycleInput` turns
-        a store's item dict into the tensor this expects, and keeping it outside
-        the model is what lets the same encoder read ``vi`` on one corpus and
-        ``fryze`` on another without the model knowing.
-
-        >>> adapter = nf.nn.CycleInput("fryze")
-        >>> batch = nf.example_measurement().aligned(cycle_size=64).batch()
-        >>> x = adapter(batch)
-        >>> model = nf.nn.models.CycleCNN(4, cycles=x.shape[2], cycle_size=64,
-        ...                               in_channels=adapter.channels, out_features=16)
-        >>> tuple(model(x).shape)
-        (1, 4, 1)
+    Not a public architecture -- the two subclasses are. This exists so the shape
+    checking and the projection are written once rather than twice.
     """
 
     kind = "seq2point"
@@ -73,15 +40,15 @@ class CycleCNN(NILMModel):
     def __init__(
         self,
         n_appliances: int,
+        encoder: nn.Module,
         *,
-        cycles: int = 20,
-        cycle_size: int = 128,
-        in_channels: int = 2,
-        encoder: nn.Module | None = None,
-        out_features: int = 256,
-        standardiser: Standardiser | None = None,
+        cycles: int,
+        cycle_size: int,
+        in_channels: int,
+        out_features: int,
+        standardiser: Standardiser | None,
     ) -> None:
-        # `window` in the base is the last axis; for this path that is the cycle.
+        # `window` in the base is the last axis; here that is the cycle.
         super().__init__(
             n_appliances,
             window=cycle_size,
@@ -92,9 +59,8 @@ class CycleCNN(NILMModel):
             raise ValueError(f"cycles must be >= 1, got {cycles}")
         self.cycles = cycles
         self.cycle_size = cycle_size
-        self.encoder = encoder or ConvNet2d(in_channels, out_features=out_features)
-        width = getattr(self.encoder, "out_features", out_features)
-        self.project = nn.Linear(width, n_appliances)
+        self.encoder = encoder
+        self.project = nn.Linear(out_features, n_appliances)
 
     def encode(self, x: Tensor) -> Tensor:
         return self.project(self.encoder(x)).unsqueeze(-1)
@@ -106,35 +72,91 @@ class CycleCNN(NILMModel):
         )
 
 
-def faustine(n_appliances: int, *, in_channels: int = 2, out_features: int = 256, **kwargs):
-    """:class:`CycleCNN` with the Faustine encoder: four strided blocks, 16 to 128.
+class Faustine(_CycleModel):
+    """Faustine et al. Four strided blocks over the cycle grid, 16 to 128 channels.
+
+    Args:
+        n_appliances: size of the label space, ``K``.
+        cycles: cycles per window.
+        cycle_size: samples per cycle, after alignment.
+        in_channels: channels the adapter produces -- 1 for ``"i"``, 2 for
+            ``"vi"``, 3 for ``"fryze"``.
+        out_features: encoder width.
+        standardiser: input/output scaling.
 
     Example:
-        >>> model = nf.nn.models.faustine(3, out_features=16, cycles=8, cycle_size=64)
-        >>> tuple(model(torch.rand(1, 2, 8, 64)).shape)
-        (1, 3, 1)
+        >>> model = nf.nn.models.Faustine(3, cycles=8, cycle_size=64, out_features=16)
+        >>> model.kind, model.input_rank
+        ('seq2point', 4)
+        >>> tuple(model(torch.rand(2, 2, 8, 64)).shape)
+        (2, 3, 1)
+
+    Note:
+        The adapter stays outside the model, which is what lets one encoder read
+        ``vi`` on one corpus and ``fryze`` on another without knowing it has.
+
+        >>> adapter = nf.nn.CycleInput("fryze")
+        >>> x = adapter(nf.example_measurement().aligned(cycle_size=64).batch())
+        >>> model = nf.nn.models.Faustine(4, cycles=23, cycle_size=64,
+        ...                               in_channels=3, out_features=16)
+        >>> tuple(model(x).shape)
+        (1, 4, 1)
     """
-    return CycleCNN(
-        n_appliances,
-        in_channels=in_channels,
-        encoder=faustine_cnn(in_channels, out_features),
-        out_features=out_features,
-        **kwargs,
-    )
+
+    def __init__(
+        self,
+        n_appliances: int,
+        *,
+        cycles: int = 20,
+        cycle_size: int = 128,
+        in_channels: int = 2,
+        out_features: int = 256,
+        standardiser: Standardiser | None = None,
+    ) -> None:
+        super().__init__(
+            n_appliances,
+            faustine_cnn(in_channels, out_features),
+            cycles=cycles,
+            cycle_size=cycle_size,
+            in_channels=in_channels,
+            out_features=out_features,
+            standardiser=standardiser,
+        )
 
 
-def schirmer(n_appliances: int, *, in_channels: int = 2, out_features: int = 256, **kwargs):
-    """:class:`CycleCNN` with the Schirmer encoder: three narrow same-padded blocks.
+class Schirmer(_CycleModel):
+    """Schirmer et al. Three narrow same-padded blocks over the cycle grid.
+
+    Args:
+        n_appliances: size of the label space, ``K``.
+        cycles: cycles per window.
+        cycle_size: samples per cycle, after alignment.
+        in_channels: channels the adapter produces.
+        out_features: encoder width.
+        standardiser: input/output scaling.
 
     Example:
-        >>> model = nf.nn.models.schirmer(3, out_features=16, cycles=8, cycle_size=64)
-        >>> tuple(model(torch.rand(1, 2, 8, 64)).shape)
-        (1, 3, 1)
+        >>> model = nf.nn.models.Schirmer(3, cycles=8, cycle_size=64, out_features=16)
+        >>> tuple(model(torch.rand(2, 2, 8, 64)).shape)
+        (2, 3, 1)
     """
-    return CycleCNN(
-        n_appliances,
-        in_channels=in_channels,
-        encoder=schirmer_cnn(in_channels, out_features),
-        out_features=out_features,
-        **kwargs,
-    )
+
+    def __init__(
+        self,
+        n_appliances: int,
+        *,
+        cycles: int = 20,
+        cycle_size: int = 128,
+        in_channels: int = 2,
+        out_features: int = 256,
+        standardiser: Standardiser | None = None,
+    ) -> None:
+        super().__init__(
+            n_appliances,
+            schirmer_cnn(in_channels, out_features),
+            cycles=cycles,
+            cycle_size=cycle_size,
+            in_channels=in_channels,
+            out_features=out_features,
+            standardiser=standardiser,
+        )
