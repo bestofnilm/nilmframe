@@ -13,7 +13,8 @@ the same rank either way.
 
 Nothing here decides what an appliance is drawing. These are transforms and
 encoders; a model is what puts a number on the end, and
-:class:`~nilmframe.nn.models.CycleCNN` is the one that does it for this path.
+:class:`~nilmframe.nn.models.Faustine` and :class:`~nilmframe.nn.models.Schirmer`
+are the two that do it for this path.
 """
 
 from __future__ import annotations

@@ -114,8 +114,10 @@ class NILMModel(nn.Module):
             if it predicts the midpoint.
         input_rank: 3 for ``(B, C, L)``, the low-rate series every model here reads
             except one. The high-frequency path aligns a window into cycles, which
-            is two-dimensional, so :class:`~nilmframe.nn.models.CycleCNN` declares
-            4 and is checked against ``(B, C, cycles, cycle_size)`` instead.
+            is two-dimensional, so the two models that read it --
+            :class:`~nilmframe.nn.models.Faustine` and
+            :class:`~nilmframe.nn.models.Schirmer` -- declare 4 and are checked
+            against ``(B, C, cycles, cycle_size)`` instead.
     """
 
     kind: Kind = "seq2seq"
