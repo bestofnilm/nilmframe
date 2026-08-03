@@ -1,0 +1,92 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nilmframe"
+version = "0.1.0"
+description = "PyTorch-native end-to-end non-intrusive load monitoring: one canonical store, many rate views."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Ilia Kamyshev" }]
+keywords = ["nilm", "energy-disaggregation", "pytorch", "smart-meter", "power-systems"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+]
+
+# Core stays deliberately light: no C++ extension, no HDF5, no training framework.
+dependencies = [
+    "torch>=2.0",
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "pyarrow>=14",
+]
+
+[project.optional-dependencies]
+readers = ["soundfile>=0.12", "h5py>=3.8"]   # WHITED ships FLAC, BLOND ships HDF5
+plot = ["matplotlib>=3.7"]                   # Measurement.plot, and the docs figures
+eval = ["torchmetrics>=1.0"]
+train = ["lightning>=2.0", "torchmetrics>=1.0", "pyyaml>=6.0"]
+dev = ["pytest>=7.4", "ruff>=0.4"]
+docs = [
+    "matplotlib>=3.7",
+    "sphinx>=7.2",
+    "furo>=2024.1",
+    "sphinx-copybutton",
+    "sphinx-design",
+    "myst-parser",
+]
+all = ["nilmframe[readers,plot,eval,train,dev,docs]"]
+
+[project.scripts]
+nilmframe = "nilmframe.cli:main"
+
+[project.urls]
+Source = "https://github.com/bestofnilm/nilmframe"
+Documentation = "https://bestofnilm.github.io/nilmframe/"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+nilmframe = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "src"]
+addopts = "-q --strict-markers --doctest-modules"
+doctest_optionflags = "NORMALIZE_WHITESPACE ELLIPSIS"
+markers = [
+    "slow: takes more than a few seconds",
+    "needs_data: requires a real dataset on disk",
+]
+filterwarnings = ["error::DeprecationWarning:nilmframe.*"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "NPY", "RUF"]
+ignore = [
+    "E741",    # ambiguous names: `i` is current, `l` is not used
+    "B008",    # function call in default arg
+    "RUF012",  # mutable class attrs need ClassVar
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501"]
+# The C++ transcription keeps `int(math.floor(...))` to mirror static_cast<int>.
+"tests/reference/*" = ["RUF046"]
+# RUF005 wants `[*list(shape[:-1]), n]` over `list(shape[:-1]) + [n]`. The
+# unpacking form is not TorchScript-scriptable and the concatenation form is,
+# and every transform here is required to be scriptable
+# (tests/test_repr.py::test_every_transform_is_torchscript_scriptable).
+"src/nilmframe/nn/repr.py" = ["RUF005"]

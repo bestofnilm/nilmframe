@@ -1,0 +1,42 @@
+# Low- versus high-frequency NILM on exactly the same data.
+#
+# One store, one split, one loss, one metric set. The arms differ only in the
+# `view`, and the view derives the model's input from the same stored waveform
+# over the same window boundaries -- so there is no preprocessing confound left
+# to argue about.
+#
+#   nilmframe sweep configs/lf_vs_hf.yaml --store ~/.nilm/ukdale --out runs/lf_vs_hf
+
+split:
+  kind: leave_house_out       # the standard NILM generalisation protocol
+  test_size: 0.4
+  seed: 0
+
+defaults:
+  epochs: 20
+  batch_size: 32
+  lr: 1.0e-3
+  stride: 1.0
+  augment: true
+  seed: 0
+  max_windows_per_channel: 200
+
+arms:
+  - name: lowfreq-1hz
+    view: {kind: lowfreq, rate_hz: 1.0, n_steps: 60}
+    model: {name: convnet, width: 128}
+
+  # The control. Same waveform, same window, same shape out -- only the cycle
+  # alignment differs. Without it, "high frequency wins" cannot be separated from
+  # "alignment wins".
+  - name: highfreq-unaligned
+    view: {kind: highfreq, n_cycles: 20, cycle_size: 128, align: null}
+    model: {name: convnet, width: 128, input: fryze}
+
+  - name: highfreq-fitps
+    view: {kind: highfreq, n_cycles: 20, cycle_size: 128, align: fitps}
+    model: {name: convnet, width: 128, input: fryze}
+
+  - name: highfreq-fitps-cold
+    view: {kind: highfreq, n_cycles: 20, cycle_size: 128, align: fitps}
+    model: {name: cold, width: 128, input: fryze}

@@ -1,0 +1,138 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff
+      - run: ruff check src tests
+      - run: ruff format --check src tests
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      # soundfile needs libsndfile for the WHITED and UK-DALE FLAC fixtures.
+      - run: sudo apt-get update && sudo apt-get install -y libsndfile1
+      - run: pip install -e ".[all]"
+      - run: pytest -q
+
+  # The core is meant to install and import with no optional extras. A missing
+  # torchmetrics or lightning must degrade to one unusable subpackage, not to an
+  # unimportable one -- which is what the lazy __getattr__ in __init__ is for.
+  core-only:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e .
+      - name: import without extras
+        run: |
+          python -c "
+          import nilmframe
+          from nilmframe.store import Store
+          from nilmframe.data import HighFreqView, WindowDataset
+          from nilmframe.nn import cycle_align, models
+          models.build('seq2point', n_appliances=2, window=65)
+          print('core imports ok:', nilmframe.__version__)
+          "
+      - name: eval subpackage names its missing extra
+        run: |
+          python -c "
+          try:
+              import nilmframe.eval
+          except ImportError as exc:
+              assert 'nilmframe[eval]' in str(exc), exc
+              print('missing extra reported correctly')
+          else:
+              raise SystemExit('expected ImportError without torchmetrics')
+          "
+      # Plotting is the other optional dependency, and the one that hid: its
+      # docstring example ran green everywhere matplotlib happened to be
+      # installed and failed only on a clean machine.
+      - name: plot names its missing extra
+        run: |
+          python -c "
+          import nilmframe as nf
+          try:
+              nf.example_measurement(seconds=0.01).plot()
+          except ImportError as exc:
+              assert 'nilmframe[plot]' in str(exc), exc
+              print('missing extra reported correctly')
+          else:
+              raise SystemExit('expected ImportError without matplotlib')
+          "
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: sudo apt-get update && sudo apt-get install -y libsndfile1
+      - run: pip install -e ".[all]"
+      # Every docstring example is executed. Documentation that cannot run is
+      # documentation that will quietly stop being true.
+      # The builder prints a count and writes the detail to a file, so a red job
+      # is unreadable on its own. Report inside the same step rather than a later
+      # one -- a separate `if: failure()` step lands in its own collapsed section
+      # and gets missed.
+      - name: doctest
+        run: |
+          make -C docs doctest || {
+            echo "::group::failing examples"
+            grep -B 6 -A 30 '^Failed example' docs/_build/doctest/output.txt || true
+            echo "::endgroup::"
+            exit 1
+          }
+      - run: make -C docs html
+      # Pages serves the artifact as-is, but the file costs nothing and keeps the
+      # build usable from any static host that does run Jekyll.
+      - run: touch docs/_build/html/.nojekyll
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/_build/html
+
+  # Publish only from main. A pull request still builds the docs above, so a
+  # broken example fails the check without touching the live site. Manual runs
+  # publish too -- the first deploy has to be triggerable by hand, since Pages
+  # cannot be switched on before a workflow has offered it an artifact.
+  publish-docs:
+    needs: docs
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
