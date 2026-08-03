@@ -112,9 +112,14 @@ class NILMModel(nn.Module):
     Attributes:
         kind: ``"seq2seq"`` if the model reconstructs the window, ``"seq2point"``
             if it predicts the midpoint.
+        input_rank: 3 for ``(B, C, L)``, the low-rate series every model here reads
+            except one. The high-frequency path aligns a window into cycles, which
+            is two-dimensional, so :class:`~nilmframe.nn.models.CycleCNN` declares
+            4 and is checked against ``(B, C, cycles, cycle_size)`` instead.
     """
 
     kind: Kind = "seq2seq"
+    input_rank: int = 3
 
     def __init__(
         self,
@@ -154,10 +159,11 @@ class NILMModel(nn.Module):
             cannot draw less than nothing, and letting a model say otherwise turns
             a small regression error into a physically impossible one.
         """
-        if x.ndim == 2:
+        if x.ndim == self.input_rank - 1:
             x = x.unsqueeze(1)
-        if x.ndim != 3:
-            raise ValueError(f"expected (B, C, L) or (B, L), got {tuple(x.shape)}")
+        if x.ndim != self.input_rank:
+            shape = "(B, C, L)" if self.input_rank == 3 else "(B, C, cycles, cycle_size)"
+            raise ValueError(f"expected {shape}, got {tuple(x.shape)}")
         if x.shape[1] != self.in_channels:
             raise ValueError(
                 f"{type(self).__name__} reads {self.in_channels} channel(s), got {x.shape[1]}"

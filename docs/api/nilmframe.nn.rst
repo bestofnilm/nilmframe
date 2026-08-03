@@ -36,3 +36,11 @@ nilmframe.nn
    rising_zero_crossings
    samples_for_cycles
    segments_from_mask
+   AvgSeqAdaptivePool
+   ConvNet1d
+   ConvNet2d
+   CycleInput
+   CycleTransformer
+   SequenceInput
+   faustine_cnn
+   schirmer_cnn

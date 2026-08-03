@@ -30,7 +30,7 @@ pieces fit together, start here.
 10. {doc}`alignment` — cycles rather than samples
 11. {doc}`representations` — what to feed a model
 12. {doc}`event_detection` — deciding when something switched
-13. {doc}`models` — eleven reference architectures under one call signature
+13. {doc}`models` — fourteen reference architectures under one call signature
 14. {doc}`evaluation` — what the metrics actually measure
 15. {doc}`cli` — the same things without Python
 

@@ -44,3 +44,15 @@ Everything else
    AttentionNILM
    BERT4NILM
    ELECTRIcity
+
+High frequency
+--------------
+
+.. autosummary::
+   :toctree: generated
+   :template: autosummary/class.rst
+   :nosignatures:
+
+   CycleCNN
+   faustine
+   schirmer

@@ -1,6 +1,6 @@
 # Reference models
 
-Eleven architectures from ten papers, reimplemented so they can be compared.
+Fourteen architectures, reimplemented so they can be compared.
 
 The value here is not any one implementation — it is that they all take the same
 input and return the same thing. Comparing two published models normally means
@@ -78,7 +78,7 @@ honest and the caller decides what to do with it.
 
 ```{doctest}
 >>> sorted(nn_.models.MODELS)
-['attention', 'bert4nilm', 'dae', 'electricity', 'seq2point', 'seq2seq', 'sgn', 'tpnilm', 'transfer', 'unet', 'wavenilm']
+['attention', 'bert4nilm', 'cyclecnn', 'dae', 'electricity', 'faustine', 'schirmer', 'seq2point', 'seq2seq', 'sgn', 'tpnilm', 'transfer', 'unet', 'wavenilm']
 ```
 
 {func}`~nilmframe.nn.models.build` takes one of those names. The indirection is
@@ -99,8 +99,9 @@ says what was available:
 >>> nn_.models.build("seq2pont", 4)
 Traceback (most recent call last):
     ...
-KeyError: "unknown model 'seq2pont'; available: attention, bert4nilm, dae,
-electricity, seq2point, seq2seq, sgn, tpnilm, transfer, unet, wavenilm"
+KeyError: "unknown model 'seq2pont'; available: attention, bert4nilm, cyclecnn,
+dae, electricity, faustine, schirmer, seq2point, seq2seq, sgn, tpnilm, transfer,
+unet, wavenilm"
 ```
 
 ## The catalogue
@@ -122,9 +123,52 @@ genuinely reuse each other's feature extractor.
 | `attention` | Piccialli & Sudoso, Energies 2021 | seq2seq | Convolutions for local shape, attention for the rest |
 | `bert4nilm` | Yue et al., BuildSys 2020 | seq2seq | Bidirectional transformer, masked pretraining |
 | `electricity` | Sykiotis et al., Sensors 2022 | seq2seq | Transformer with a replaced-token objective |
+| `cyclecnn` | — | seq2point | Reads aligned mains cycles rather than a power series |
+| `faustine` / `schirmer` | Faustine et al. / Schirmer et al. | seq2point | `cyclecnn` with a published encoder |
 
 None of them is trained. Constructing one gives random weights, and the library
 ships no checkpoints.
+
+## The high-frequency path
+
+Thirteen of the fourteen read a low-rate power series. A waveform corpus does not
+arrive that way: it arrives as voltage and current at kilohertz, and once
+alignment has put each mains cycle on a common grid it is two-dimensional --
+cycles by samples-within-a-cycle. Flattening that to a series throws away the axis
+that made it worth measuring.
+
+So `cyclecnn` takes the aligned tensor as it is, and says so:
+
+```{doctest}
+>>> cycle = nn_.models.build("cyclecnn", n_appliances=3, cycles=8,
+...                          cycle_size=64, out_features=16)
+>>> cycle.kind, cycle.input_rank
+('seq2point', 4)
+>>> tuple(cycle(torch.rand(2, 2, 8, 64)).shape)
+(2, 3, 1)
+```
+
+`input_rank` is the only place the contract bends, and it bends where the data
+genuinely has another axis. Everything else holds: watts out, shape declared.
+
+Getting from a store to that tensor is an adapter's job, kept outside the model so
+one encoder can read `vi` on one corpus and `fryze` on another:
+
+```{doctest}
+>>> adapter = nn_.CycleInput("fryze")
+>>> batch = nf.example_measurement().aligned(cycle_size=64).batch()
+>>> x = adapter(batch)
+>>> adapter.channels, tuple(x.shape)
+(3, (1, 3, 23, 64))
+>>> model = nn_.models.CycleCNN(4, cycles=23, cycle_size=64,
+...                             in_channels=3, out_features=16)
+>>> tuple(model(x).shape)
+(1, 4, 1)
+```
+
+`faustine` and `schirmer` are the same model with a published encoder in place of
+the default. {class}`~nilmframe.nn.CycleTransformer` is the third, treating each
+cycle as a token rather than the grid as an image.
 
 ## Where they diverge from the common case
 
