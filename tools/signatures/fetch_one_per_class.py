@@ -50,8 +50,7 @@ def plaid_class_map(cache: pathlib.Path) -> dict[str, str]:
                 continue
             ident = str(rec.get("id") or rec.get("file_name") or "").split(".")[0]
             # The type is nested: {"id": ..., "meta": {"appliance": {"type": ...}}}
-            appliance = ((rec.get("meta") or {}).get("appliance")
-                         or rec.get("appliance") or {})
+            appliance = (rec.get("meta") or {}).get("appliance") or rec.get("appliance") or {}
             name = appliance.get("type") if isinstance(appliance, dict) else appliance
             if ident and name:
                 mapping[f"csv/{ident}.csv"] = str(name).strip().lower()
@@ -87,8 +86,13 @@ def pick(dataset: str, cache: pathlib.Path, per_class: int) -> Plan:
         keep.append(artifact)
 
     classes = {s.split("|")[0] for s in seen}
-    logger.info("%-8s %d classes, %d files, %s", dataset, len(classes), len(keep),
-                human_bytes(sum(a.size or a.size_max or 0 for a in keep)))
+    logger.info(
+        "%-8s %d classes, %d files, %s",
+        dataset,
+        len(classes),
+        len(keep),
+        human_bytes(sum(a.size or a.size_max or 0 for a in keep)),
+    )
     return Plan(dataset, tuple(keep))
 
 

@@ -18,6 +18,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import logging
 import pathlib
@@ -29,9 +30,9 @@ from nilmframe.store import Store
 
 logger = logging.getLogger("extract-viz")
 
-ENVELOPE = 700      #: envelope points per signature
-CYCLES = 120        #: aligned cycles kept per signature
-CYCLE_SIZE = 64     #: samples per aligned cycle
+ENVELOPE = 700  #: envelope points per signature
+CYCLES = 120  #: aligned cycles kept per signature
+CYCLE_SIZE = 64  #: samples per aligned cycle
 
 
 def _cycles(measurement, f0: float):
@@ -60,9 +61,11 @@ def _cycles(measurement, f0: float):
     if n < 2:
         return None, None, False
     grid = np.linspace(0, period, CYCLE_SIZE, endpoint=False)
-    cut = lambda x: np.stack([  # noqa: E731
-        np.interp(k * period + grid, np.arange(x.size), x) for k in range(n)
-    ])
+    cut = lambda x: np.stack(
+        [  # noqa: E731
+            np.interp(k * period + grid, np.arange(x.size), x) for k in range(n)
+        ]
+    )
     return cut(raw_i), cut(raw_v), False
 
 
@@ -87,10 +90,11 @@ def summarise(store: Store, channel_id: str) -> dict | None:
     watts = (v * i).mean(axis=1)
 
     edges = np.linspace(0, n, min(ENVELOPE, n) + 1).astype(int)
-    take = lambda a: [  # noqa: E731
-        round(float(a[x:y].mean()), 4) if y > x else 0.0
-        for x, y in zip(edges[:-1], edges[1:])
-    ]
+    take = (
+        lambda a: [  # noqa: E731
+            round(float(a[x:y].mean()), 4) if y > x else 0.0 for x, y in itertools.pairwise(edges)
+        ]
+    )
 
     picks = np.unique(np.linspace(0, n - 1, min(CYCLES, n)).astype(int))
     return {
@@ -108,8 +112,8 @@ def summarise(store: Store, channel_id: str) -> dict | None:
         "env_rms": take(rms),
         "env_w": take(watts),
         "cycle_at": [int(k) for k in picks],
-        "cycles_i": [[int(round(x * 1000)) for x in i[k]] for k in picks],
-        "cycles_v": [[int(round(x * 10)) for x in v[k]] for k in picks],
+        "cycles_i": [[round(x * 1000) for x in i[k]] for k in picks],
+        "cycles_v": [[round(x * 10) for x in v[k]] for k in picks],
     }
 
 
@@ -131,8 +135,7 @@ def main(argv=None) -> int:
 
     payload = {"cycle_size": CYCLE_SIZE, "appliances": rows}
     args.out.expanduser().write_text(json.dumps(payload, separators=(",", ":")))
-    logger.info("%d signatures, %.1f MB", len(rows),
-                args.out.expanduser().stat().st_size / 1e6)
+    logger.info("%d signatures, %.1f MB", len(rows), args.out.expanduser().stat().st_size / 1e6)
     return 0
 
 

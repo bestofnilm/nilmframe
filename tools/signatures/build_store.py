@@ -41,8 +41,17 @@ def _clean(x: np.ndarray) -> np.ndarray:
     return np.ascontiguousarray(np.nan_to_num(np.asarray(x, dtype=np.float32)))
 
 
-def _emit(writer: StoreWriter, dataset: str, appliance: str, v, i, fs: float,
-          f0: float | None = 50.0, session: str = "signature", **meta) -> bool:
+def _emit(
+    writer: StoreWriter,
+    dataset: str,
+    appliance: str,
+    v,
+    i,
+    fs: float,
+    f0: float | None = 50.0,
+    session: str = "signature",
+    **meta,
+) -> bool:
     v, i = _clean(v), _clean(i)
     if min(v.size, i.size) < MIN_SECONDS * fs:
         logger.info("%s/%s: too short, skipped", dataset, appliance)
@@ -87,9 +96,18 @@ def from_activations(writer, reader, dataset: str, limit_per_class: int = 1) -> 
     written = 0
     for appliance, rec in sorted(best.items()):
         seconds = rec.signals["i"].size / rec.fs
-        if _emit(writer, dataset, appliance, rec.signals["v"], rec.signals["i"],
-                 rec.fs, rec.f0, session=rec.session or "activation",
-                 seconds=round(seconds, 3), source=rec.meta.get("source")):
+        if _emit(
+            writer,
+            dataset,
+            appliance,
+            rec.signals["v"],
+            rec.signals["i"],
+            rec.fs,
+            rec.f0,
+            session=rec.session or "activation",
+            seconds=round(seconds, 3),
+            source=rec.meta.get("source"),
+        ):
             written += 1
     return written
 
@@ -115,7 +133,8 @@ def find_run(power: np.ndarray, fs: float) -> tuple[int, int] | None:
     starts = list(np.flatnonzero(edges == 1) + 1)
     stops = list(np.flatnonzero(edges == -1) + 1)
     runs = [
-        (a, b) for a, b in zip(starts, stops)
+        (a, b)
+        for a, b in zip(starts, stops, strict=False)
         # A run against a file edge may be cut off, and a cut-off run is not a run.
         if a > 0 and b < len(p) - 1 and (b - a) / fs >= 20.0
     ]
@@ -144,23 +163,26 @@ def main(argv=None) -> int:
         return dirs[-1] if dirs else root
 
     def plaid_metadata(root: pathlib.Path):
-        return [p for p in sorted(root.glob("meta*.json"))]
+        return sorted(root.glob("meta*.json"))
 
     plans: list[tuple[str, callable]] = [
         # WHITED puts its recordings under flac/; handed the cache root the reader
         # finds nothing and says so only at DEBUG.
-        ("whited", lambda w: from_activations(
-            w, WHITED(cache / "whited" / "flac"), "whited")),
-        ("plaid", lambda w: from_activations(
-            w, PLAID(cache / "plaid" / "csv", plaid_metadata(cache / "plaid")), "plaid")),
-        ("hifda", lambda w: from_activations(
-            w, HIFDA(hifda_windows(cache / "hifda")), "hifda")),
+        ("whited", lambda w: from_activations(w, WHITED(cache / "whited" / "flac"), "whited")),
+        (
+            "plaid",
+            lambda w: from_activations(
+                w, PLAID(cache / "plaid" / "csv", plaid_metadata(cache / "plaid")), "plaid"
+            ),
+        ),
+        ("hifda", lambda w: from_activations(w, HIFDA(hifda_windows(cache / "hifda")), "hifda")),
     ]
 
     args.dst.expanduser().parent.mkdir(parents=True, exist_ok=True)
     total = 0
-    with StoreWriter(args.dst.expanduser(), source="one signature per appliance",
-                     overwrite=True) as writer:
+    with StoreWriter(
+        args.dst.expanduser(), source="one signature per appliance", overwrite=True
+    ) as writer:
         for name, run in plans:
             if wanted and name not in wanted:
                 continue
