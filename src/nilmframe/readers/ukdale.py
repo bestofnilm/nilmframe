@@ -44,7 +44,7 @@ from nilmframe.store.schema import ChannelKind, Recording
 if TYPE_CHECKING:  # `nilmframe.sources` is imported only when data is fetched
     from nilmframe.sources import Plan
 
-__all__ = ["UKDALE", "forward_fill_to_grid", "split_on_gaps"]
+__all__ = ["UKDALE", "block_mean_to_grid", "forward_fill_to_grid", "split_on_gaps"]
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +64,58 @@ def split_on_gaps(timestamps: np.ndarray, max_gap_s: float) -> list[tuple[int, i
     edges = [0, *breaks.tolist(), timestamps.size]
     return [(a, b) for a, b in pairwise(edges) if b - a > 1]
 
+
+
+def block_mean_to_grid(
+    timestamps: np.ndarray, values: np.ndarray, fs: float
+) -> tuple[np.ndarray, float]:
+    """Average an irregular series into uniform bins of width ``1 / fs``.
+
+    ``forward_fill_to_grid`` is the right answer when a step signal is read at
+    roughly its own rate: it holds the last reading until the next one arrives.
+    It is the wrong answer when 1 Hz mains are turned into a one-minute series,
+    because a minute meter does not report the instant at the tick -- it reports
+    what the load did over the minute. Sub-sampling a 1 Hz feed keeps one second
+    in sixty and throws away the rest, which invents steps that the meter this
+    is meant to imitate would never have seen.
+
+    Bins with no sample are carried forward from the previous bin, so the result
+    has no holes for a downstream segmenter to trip over.
+
+    Args:
+        timestamps: strictly increasing seconds.
+        values: one reading per timestamp.
+        fs: target rate in Hz.
+
+    Returns:
+        ``(binned, t0)`` where ``t0`` is the left edge of the first bin.
+
+    Example:
+        >>> import numpy as np
+        >>> from nilmframe.readers.ukdale import block_mean_to_grid
+        >>> stamps = np.arange(120.0)
+        >>> watts = np.where(stamps < 60, 0.0, 300.0)
+        >>> series, t0 = block_mean_to_grid(stamps, watts, fs=1.0 / 60.0)
+        >>> series.tolist(), t0
+        ([0.0, 300.0], 0.0)
+    """
+    if timestamps.size == 0:
+        return np.empty(0), 0.0
+    step = 1.0 / fs
+    t0 = float(np.floor(timestamps[0] / step) * step)
+    idx = ((timestamps - t0) / step).astype(np.int64)
+    n = int(idx[-1]) + 1
+    total = np.bincount(idx, weights=values, minlength=n)
+    count = np.bincount(idx, minlength=n)
+    out = np.divide(total, count, out=np.full(n, np.nan), where=count > 0)
+    # carry the last observed bin across empty ones
+    holes = np.isnan(out)
+    if holes.any():
+        seen = np.where(~holes, np.arange(n), 0)
+        np.maximum.accumulate(seen, out=seen)
+        out = out[seen]
+        out[np.isnan(out)] = 0.0
+    return out, t0
 
 def forward_fill_to_grid(
     timestamps: np.ndarray, values: np.ndarray, fs: float
@@ -170,6 +222,7 @@ class UKDALE:
         houses: list[int] | None = None,
         rate_hz: float = 1.0 / 6.0,
         max_gap_s: float = 300.0,
+        mains_pq: bool = False,
         high_freq: bool = True,
         high_freq_root: str | Path | None = None,
         hf_fs: float = 16000.0,
@@ -184,6 +237,9 @@ class UKDALE:
 
         self.rate_hz = rate_hz
         self.max_gap_s = max_gap_s
+        # `mains.dat` is the 1 Hz aggregate and the only place UK-DALE publishes
+        # apparent power, which is the one route to a reactive axis here.
+        self.mains_pq = mains_pq
         self.high_freq = high_freq
         self.high_freq_root = Path(high_freq_root).expanduser() if high_freq_root else None
         self.hf_fs = hf_fs
@@ -357,7 +413,20 @@ class UKDALE:
         root = self.dirpath / f"house_{house}"
         labels = self._read_labels(root)
 
+        # With `mains_pq` the 1 Hz `mains.dat` replaces channel 1 as the
+        # aggregate, because it is the only file carrying apparent power and so
+        # the only route to a reactive axis. The submeters still come from the
+        # channel files, which is what keeps the truth aligned to the mains.
+        mains_path = root / "mains.dat"
+        use_pq = self.mains_pq and mains_path.exists()
+        if self.mains_pq and not mains_path.exists():
+            logger.warning("UK-DALE: house_%d has no mains.dat; falling back to channel 1", house)
+        if use_pq:
+            yield from self._read_mains_pq(house, mains_path)
+
         for channel, appliance in sorted(labels.items()):
+            if use_pq and channel == 1:
+                continue
             path = root / f"channel_{channel}.dat"
             if not path.exists():
                 logger.warning("UK-DALE: %s listed in labels.dat but missing", path.name)
@@ -444,6 +513,70 @@ class UKDALE:
                 fs=self.rate_hz,
                 t0=t0,
                 meta={"channel": channel, "source": path.name},
+            )
+
+    def _load_mains(self, path: Path) -> tuple[np.ndarray, ...]:
+        """Read ``house_N/mains.dat``: ``<ts> <active W> <apparent VA> <volts>``."""
+        import pandas as pd
+
+        cols = ["t", "p", "s", "v"]
+        if self.time_range is None:
+            frame = pd.read_csv(path, sep=r"\s+", header=None, names=cols, engine="c")
+        else:
+            start, stop = self.time_range
+            keep: list[pd.DataFrame] = []
+            for chunk in pd.read_csv(
+                path, sep=r"\s+", header=None, names=cols, engine="c", chunksize=2_000_000
+            ):
+                if chunk["t"].iloc[0] > stop:
+                    break
+                keep.append(chunk[(chunk["t"] >= start) & (chunk["t"] <= stop)])
+            if not keep:
+                return (np.empty(0),) * 4
+            frame = pd.concat(keep, ignore_index=True)
+        return tuple(frame[c].to_numpy(np.float64) for c in cols)
+
+    def _read_mains_pq(self, house: int, path: Path) -> Iterator[Recording]:
+        """Yield the 1 Hz aggregate as active *and* reactive power.
+
+        UK-DALE publishes apparent power beside active power for houses 1, 2 and
+        5, and nothing else in the dataset carries the second axis. Reactive
+        power follows from the power triangle, ``Q = sqrt(S^2 - P^2)``, which is
+        unsigned: the sign of the phase angle is not recoverable from magnitudes
+        alone. Differences of that magnitude across a switching event are still
+        signed, which is what a signature plane needs, but a single reading
+        cannot say whether the load leads or lags.
+        """
+        timestamps, active, apparent, _volts = self._load_mains(path)
+        if timestamps.size == 0:
+            return
+        order = np.argsort(timestamps)
+        timestamps, active, apparent = timestamps[order], active[order], apparent[order]
+        # Rounding in the published file puts a handful of samples just inside
+        # S < P, where the triangle has no solution; clip rather than drop, so
+        # the grid stays contiguous.
+        reactive = np.sqrt(np.clip(apparent * apparent - active * active, 0.0, None))
+
+        for run, (a, b) in enumerate(split_on_gaps(timestamps, self.max_gap_s)):
+            p_series, t0 = block_mean_to_grid(timestamps[a:b], active[a:b], self.rate_hz)
+            q_series, _ = block_mean_to_grid(timestamps[a:b], reactive[a:b], self.rate_hz)
+            if p_series.size < 2:
+                continue
+            n = min(p_series.size, q_series.size)
+            self._runs.setdefault(f"house_{house}", []).append(
+                (f"run_{run}", t0, t0 + n / self.rate_hz)
+            )
+            yield Recording(
+                dataset=self.dataset,
+                house=f"house_{house}",
+                session=f"run_{run}",
+                kind=ChannelKind.MAINS,
+                appliance=None,
+                instance_id=None,
+                signals={"p": p_series[:n], "q": q_series[:n]},
+                fs=self.rate_hz,
+                t0=t0,
+                meta={"channel": 0, "source": path.name, "reactive": "sqrt(S^2-P^2)"},
             )
 
     def high_freq_files(self, house: int) -> list[Path]:

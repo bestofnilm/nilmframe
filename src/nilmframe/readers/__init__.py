@@ -13,9 +13,11 @@ level, so constructing a reader never touches the network.
 
 from __future__ import annotations
 
+from nilmframe.readers.ampds import AMPds2
 from nilmframe.readers.blond import BLOND
 from nilmframe.readers.fired import FIRED
 from nilmframe.readers.hifda import HIFDA
+from nilmframe.readers.iawe import IAWE
 from nilmframe.readers.plaid import PLAID
 from nilmframe.readers.refit import REFIT
 from nilmframe.readers.smartnialm import SmartNIALM
@@ -25,6 +27,7 @@ from nilmframe.readers.whited import WHITED
 
 #: Reader classes by the name the CLI knows them under.
 REGISTRY: dict[str, type] = {
+    "ampds2": AMPds2,
     "blond": BLOND,
     "fired": FIRED,
     "hifda": HIFDA,
@@ -37,9 +40,11 @@ REGISTRY: dict[str, type] = {
 }
 
 __all__ = [
+    "AMPds2",
     "BLOND",
     "FIRED",
     "HIFDA",
+    "IAWE",
     "PLAID",
     "REFIT",
     "REGISTRY",
